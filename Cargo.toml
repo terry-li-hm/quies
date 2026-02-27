@@ -1,6 +1,6 @@
 [package]
 name = "quies"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "TUI ambient sound mixer — layer lofi, noise, and nature sounds from your terminal"
 license = "MIT"
