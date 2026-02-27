@@ -1,0 +1,27 @@
+[package]
+name = "quies"
+version = "0.1.0"
+edition = "2024"
+description = "TUI ambient sound mixer — layer lofi, noise, and nature sounds from your terminal"
+license = "MIT"
+repository = "https://github.com/terry-li-hm/quies"
+homepage = "https://github.com/terry-li-hm/quies"
+keywords = ["ambient", "noise", "lofi", "tui", "audio"]
+categories = ["command-line-utilities", "multimedia::audio"]
+
+[[bin]]
+name = "quies"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+ratatui = "0.30"
+rodio = { version = "0.22", features = ["noise"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
