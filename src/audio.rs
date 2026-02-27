@@ -1,8 +1,11 @@
+use std::io::BufReader;
 use std::num::NonZero;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rodio::Decoder;
 use rodio::source::noise::{Blue, Brownian, Pink, Red, Violet, WhiteUniform};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Source};
 
@@ -63,10 +66,19 @@ pub const PRESETS: &[(&str, &[PresetLayer])] = &[
     ),
 ];
 
+pub enum LayerStatus {
+    Playing,
+    Downloading,
+    Error(String),
+}
+
 pub struct Layer {
     pub name: String,
     pub volume: Arc<AtomicU32>,
     pub active: Arc<AtomicBool>,
+    pub url: Option<String>,
+    pub path: Option<PathBuf>,
+    pub status: Arc<Mutex<LayerStatus>>,
 }
 
 pub struct AudioEngine {
@@ -110,7 +122,60 @@ impl AudioEngine {
             name: name.to_string(),
             volume: vol,
             active,
+            url: None,
+            path: None,
+            status: Arc::new(Mutex::new(LayerStatus::Playing)),
         });
+    }
+
+    pub fn add_audio_layer(&mut self, name: &str, path: PathBuf, url: &str, volume: f32) -> anyhow::Result<()> {
+        let vol = Arc::new(AtomicU32::new(volume.to_bits()));
+        let active = Arc::new(AtomicBool::new(true));
+
+        // 256KB buffer: default 8KB = ~45ms at 44.1kHz stereo f32 — too small.
+        let file = BufReader::with_capacity(256 * 1024, std::fs::File::open(&path)?);
+        let source = Decoder::new_looped(file)?;
+        self.stream.mixer().add(VolumeSource::new(source, vol.clone(), active.clone()));
+
+        self.layers.push(Layer {
+            name: name.to_string(),
+            volume: vol,
+            active,
+            url: Some(url.to_string()),
+            path: Some(path),
+            status: Arc::new(Mutex::new(LayerStatus::Playing)),
+        });
+        Ok(())
+    }
+
+    /// Add a placeholder layer that's downloading. Returns its index and status handle.
+    pub fn add_pending_layer(&mut self, name: &str, url: &str, volume: f32) -> (usize, Arc<AtomicU32>, Arc<AtomicBool>, Arc<Mutex<LayerStatus>>) {
+        let vol = Arc::new(AtomicU32::new(volume.to_bits()));
+        let active = Arc::new(AtomicBool::new(true));
+        let status = Arc::new(Mutex::new(LayerStatus::Downloading));
+
+        self.layers.push(Layer {
+            name: name.to_string(),
+            volume: vol.clone(),
+            active: active.clone(),
+            url: Some(url.to_string()),
+            path: None,
+            status: status.clone(),
+        });
+        let idx = self.layers.len() - 1;
+        (idx, vol, active, status)
+    }
+
+    /// Activate a pending layer after download completes.
+    pub fn activate_audio_layer(&mut self, idx: usize, path: PathBuf) -> anyhow::Result<()> {
+        let file = BufReader::with_capacity(256 * 1024, std::fs::File::open(&path)?);
+        let source = Decoder::new_looped(file)?;
+
+        let layer = &mut self.layers[idx];
+        layer.path = Some(path);
+        self.stream.mixer().add(VolumeSource::new(source, layer.volume.clone(), layer.active.clone()));
+        *layer.status.lock().unwrap() = LayerStatus::Playing;
+        Ok(())
     }
 
     pub fn get_volume(&self, idx: usize) -> f32 {
@@ -155,9 +220,17 @@ impl AudioEngine {
             .iter()
             .enumerate()
             .map(|(i, l)| {
-                let vol = (self.get_volume(i) * 100.0).round() as u8;
-                let state = if self.is_active(i) { "" } else { " [off]" };
-                format!("  {} {}%{}", l.name, vol, state)
+                let kind = if l.url.is_some() { "♪" } else { "~" };
+                let status = l.status.lock().unwrap();
+                match &*status {
+                    LayerStatus::Downloading => format!("  {kind} {} [downloading...]", l.name),
+                    LayerStatus::Error(e) => format!("  {kind} {} [error: {e}]", l.name),
+                    LayerStatus::Playing => {
+                        let vol = (self.get_volume(i) * 100.0).round() as u8;
+                        let state = if self.is_active(i) { "" } else { " [off]" };
+                        format!("  {kind} {} {}%{}", l.name, vol, state)
+                    }
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")

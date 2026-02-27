@@ -1,20 +1,25 @@
 mod audio;
 mod ui;
 
+use std::collections::hash_map::DefaultHasher;
 use std::env;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
 
-use audio::{AudioEngine, PRESETS};
+use audio::{AudioEngine, LayerStatus, PRESETS};
 
 pub struct App {
-    engine: AudioEngine,
+    engine: Arc<Mutex<AudioEngine>>,
     selected: usize,
+    download_count: Arc<Mutex<u8>>,
 }
 
 impl App {
@@ -30,23 +35,27 @@ impl App {
         }
 
         Ok(Self {
-            engine,
+            engine: Arc::new(Mutex::new(engine)),
             selected: 0,
+            download_count: Arc::new(Mutex::new(0)),
         })
     }
 
+    fn layer_count(&self) -> usize {
+        self.engine.lock().unwrap().layers.len()
+    }
+
     fn next_layer(&mut self) {
-        if !self.engine.layers.is_empty() {
-            self.selected = (self.selected + 1) % self.engine.layers.len();
+        let count = self.layer_count();
+        if count > 0 {
+            self.selected = (self.selected + 1) % count;
         }
     }
 
     fn prev_layer(&mut self) {
-        if !self.engine.layers.is_empty() {
-            self.selected = self
-                .selected
-                .checked_sub(1)
-                .unwrap_or(self.engine.layers.len() - 1);
+        let count = self.layer_count();
+        if count > 0 {
+            self.selected = self.selected.checked_sub(1).unwrap_or(count - 1);
         }
     }
 }
@@ -77,12 +86,135 @@ Commands:
   status             Show what's playing
   vol <layer> <0-1>  Set layer volume (e.g. vol brown 0.6)
   mute <layer>       Toggle mute on a layer
+  add <name> <url>   Add audio layer from URL (YouTube or direct)
 
 Presets: {}
 
 TUI controls: j/k select, h/l volume, m mute, q quit",
         preset_names()
     );
+}
+
+fn url_hash(url: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn cache_dir() -> PathBuf {
+    env::var("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| "/tmp".into())
+}
+
+fn is_youtube_url(url: &str) -> bool {
+    url.contains("youtube.com") || url.contains("youtu.be")
+}
+
+fn check_command(name: &str) -> anyhow::Result<()> {
+    match Command::new(name).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status() {
+        Ok(s) if s.success() => Ok(()),
+        _ => anyhow::bail!("{name} not found — install with: brew install {name}"),
+    }
+}
+
+/// Spawn a background download thread. Updates layer status on completion/failure.
+fn spawn_download(app: &App, idx: usize, url: String, _name: String) {
+    let engine = Arc::clone(&app.engine);
+    let download_count = Arc::clone(&app.download_count);
+
+    // Concurrent download cap: max 3
+    {
+        let mut count = download_count.lock().unwrap();
+        if *count >= 3 {
+            let eng = engine.lock().unwrap();
+            *eng.layers[idx].status.lock().unwrap() = LayerStatus::Error("too many downloads".to_string());
+            return;
+        }
+        *count += 1;
+    }
+
+    std::thread::spawn(move || {
+        let result = run_download(&url);
+        let mut eng = engine.lock().unwrap();
+
+        match result {
+            Ok(path) => {
+                if let Err(e) = eng.activate_audio_layer(idx, path) {
+                    *eng.layers[idx].status.lock().unwrap() = LayerStatus::Error(format!("decode: {e}"));
+                }
+            }
+            Err(e) => {
+                *eng.layers[idx].status.lock().unwrap() = LayerStatus::Error(e.to_string());
+            }
+        }
+
+        *download_count.lock().unwrap() -= 1;
+    });
+}
+
+fn run_download(url: &str) -> anyhow::Result<PathBuf> {
+    let hash = url_hash(url);
+
+    if is_youtube_url(url) {
+        check_command("yt-dlp")?;
+        let final_path = cache_dir().join(format!("quies-{hash}.m4a"));
+        // Cache hit
+        if final_path.exists() {
+            return Ok(final_path);
+        }
+        let tmp_path = cache_dir().join(format!("quies-{hash}.tmp"));
+        let output = Command::new("yt-dlp")
+            .args([
+                "-f", "bestaudio[ext=m4a]/bestaudio",
+                "--max-filesize", "200m",
+                "--no-playlist",
+                "--no-progress",
+                "-o", tmp_path.to_str().unwrap(),
+                url,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("{}", stderr.lines().last().unwrap_or("yt-dlp failed"));
+        }
+        std::fs::rename(&tmp_path, &final_path)?;
+        Ok(final_path)
+    } else {
+        check_command("curl")?;
+        // Guess extension from URL, default to mp3
+        let ext = url.rsplit('.').next()
+            .filter(|e| ["mp3", "m4a", "flac", "wav", "ogg", "aac"].contains(e))
+            .unwrap_or("mp3");
+        let final_path = cache_dir().join(format!("quies-{hash}.{ext}"));
+        // Cache hit
+        if final_path.exists() {
+            return Ok(final_path);
+        }
+        let tmp_path = cache_dir().join(format!("quies-{hash}.tmp"));
+        let output = Command::new("curl")
+            .args([
+                "-fSL",
+                "--max-filesize", "209715200",
+                "--max-time", "600",
+                "-o", tmp_path.to_str().unwrap(),
+                url,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()?;
+
+        if !output.status.success() {
+            let _ = std::fs::remove_file(&tmp_path);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("{}", stderr.lines().last().unwrap_or("download failed"));
+        }
+        std::fs::rename(&tmp_path, &final_path)?;
+        Ok(final_path)
+    }
 }
 
 // --- Client: send command to running daemon ---
@@ -155,20 +287,30 @@ fn handle_client(stream: UnixStream, app: &App) -> bool {
 
     let response = match cmd {
         "stop" => {
+            // Clean up cached audio files
+            let eng = app.engine.lock().unwrap();
+            for layer in &eng.layers {
+                if let Some(path) = &layer.path {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            drop(eng);
             let _ = write_response(&stream, "stopped\n");
             return false;
         }
         "status" => {
-            format!("playing\n{}\n", app.engine.status())
+            let eng = app.engine.lock().unwrap();
+            format!("playing\n{}\n", eng.status())
         }
         "vol" => {
             let layer_name = parts.get(1).unwrap_or(&"");
             let vol_str = parts.get(2).unwrap_or(&"");
-            match (app.engine.find_layer(layer_name), vol_str.parse::<f32>()) {
+            let eng = app.engine.lock().unwrap();
+            match (eng.find_layer(layer_name), vol_str.parse::<f32>()) {
                 (Some(idx), Ok(vol)) => {
-                    app.engine.set_volume(idx, vol);
-                    let actual = (app.engine.get_volume(idx) * 100.0).round() as u8;
-                    format!("{} → {}%\n", app.engine.layers[idx].name, actual)
+                    eng.set_volume(idx, vol);
+                    let actual = (eng.get_volume(idx) * 100.0).round() as u8;
+                    format!("{} → {}%\n", eng.layers[idx].name, actual)
                 }
                 (None, _) => format!("unknown layer: {layer_name}\n"),
                 (_, Err(_)) => format!("invalid volume: {vol_str}\n"),
@@ -176,17 +318,48 @@ fn handle_client(stream: UnixStream, app: &App) -> bool {
         }
         "mute" => {
             let layer_name = parts.get(1).unwrap_or(&"");
-            match app.engine.find_layer(layer_name) {
+            let eng = app.engine.lock().unwrap();
+            match eng.find_layer(layer_name) {
                 Some(idx) => {
-                    app.engine.toggle_mute(idx);
-                    let state = if app.engine.is_active(idx) {
-                        "unmuted"
-                    } else {
-                        "muted"
-                    };
-                    format!("{} {state}\n", app.engine.layers[idx].name)
+                    eng.toggle_mute(idx);
+                    let state = if eng.is_active(idx) { "unmuted" } else { "muted" };
+                    format!("{} {state}\n", eng.layers[idx].name)
                 }
                 None => format!("unknown layer: {layer_name}\n"),
+            }
+        }
+        "add" => {
+            let name = parts.get(1).unwrap_or(&"");
+            let url = parts.get(2).unwrap_or(&"");
+            if name.is_empty() || url.is_empty() {
+                "usage: add <name> <url>\n".to_string()
+            } else {
+                // Check cache first
+                let hash = url_hash(url);
+                let cached = if is_youtube_url(url) {
+                    let p = cache_dir().join(format!("quies-{hash}.m4a"));
+                    if p.exists() { Some(p) } else { None }
+                } else {
+                    let ext = url.rsplit('.').next()
+                        .filter(|e| ["mp3", "m4a", "flac", "wav", "ogg", "aac"].contains(e))
+                        .unwrap_or("mp3");
+                    let p = cache_dir().join(format!("quies-{hash}.{ext}"));
+                    if p.exists() { Some(p) } else { None }
+                };
+
+                if let Some(path) = cached {
+                    let mut eng = app.engine.lock().unwrap();
+                    match eng.add_audio_layer(name, path, url, 0.5) {
+                        Ok(()) => format!("♪ {name} added (cached)\n"),
+                        Err(e) => format!("error: {e}\n"),
+                    }
+                } else {
+                    let mut eng = app.engine.lock().unwrap();
+                    let (idx, _, _, _) = eng.add_pending_layer(name, url, 0.5);
+                    drop(eng);
+                    spawn_download(app, idx, url.to_string(), name.to_string());
+                    format!("♪ {name} downloading...\n")
+                }
             }
         }
         _ => format!("unknown command: {cmd}\n"),
@@ -215,13 +388,14 @@ fn run_tui(terminal: &mut DefaultTerminal, preset: &str) -> anyhow::Result<()> {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+            let sel = app.selected;
             match key.code {
                 KeyCode::Char('q') => break,
                 KeyCode::Char('j') | KeyCode::Down => app.next_layer(),
                 KeyCode::Char('k') | KeyCode::Up => app.prev_layer(),
-                KeyCode::Char('l') | KeyCode::Right => app.engine.volume_up(app.selected),
-                KeyCode::Char('h') | KeyCode::Left => app.engine.volume_down(app.selected),
-                KeyCode::Char('m') => app.engine.toggle_mute(app.selected),
+                KeyCode::Char('l') | KeyCode::Right => app.engine.lock().unwrap().volume_up(sel),
+                KeyCode::Char('h') | KeyCode::Left => app.engine.lock().unwrap().volume_down(sel),
+                KeyCode::Char('m') => app.engine.lock().unwrap().toggle_mute(sel),
                 _ => {}
             }
         }
@@ -290,6 +464,14 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("usage: quies mute <layer>");
             }
             let resp = send_command(&format!("mute {}", args[1]))?;
+            print!("{resp}");
+            Ok(())
+        }
+        "add" => {
+            if args.len() < 3 {
+                anyhow::bail!("usage: quies add <name> <url>");
+            }
+            let resp = send_command(&format!("add {} {}", args[1], args[2]))?;
             print!("{resp}");
             Ok(())
         }

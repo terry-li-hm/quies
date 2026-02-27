@@ -5,9 +5,11 @@ use ratatui::widgets::{Gauge, Paragraph};
 use ratatui::Frame;
 
 use crate::App;
+use crate::audio::LayerStatus;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let layer_count = app.engine.layers.len();
+    let engine = app.engine.lock().unwrap();
+    let layer_count = engine.layers.len();
 
     let mut constraints: Vec<Constraint> = Vec::new();
     // Title
@@ -27,16 +29,25 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(title, areas[0]);
 
     // Layers
-    for (i, layer) in app.engine.layers.iter().enumerate() {
-        let vol = app.engine.get_volume(i);
-        let active = app.engine.is_active(i);
+    for (i, layer) in engine.layers.iter().enumerate() {
+        let vol = engine.get_volume(i);
+        let active = engine.is_active(i);
         let selected = i == app.selected;
+        let status = layer.status.lock().unwrap();
 
-        let prefix = if selected { " \u{25b8} " } else { "   " };
-        let pct = (vol * 100.0).round() as u8;
+        let kind = if layer.url.is_some() { "♪" } else { "~" };
+        let prefix = if selected { format!(" \u{25b8} {kind} ") } else { format!("   {kind} ") };
 
-        let suffix = if !active { " [off]" } else { "" };
-        let label_text = format!("{prefix}{:<16} {pct:>3}%{suffix}", layer.name);
+        // For non-playing states, show status instead of volume
+        let label_text = match &*status {
+            LayerStatus::Downloading => format!("{prefix}{:<16} [downloading...]", layer.name),
+            LayerStatus::Error(e) => format!("{prefix}{:<16} [error: {e}]", layer.name),
+            LayerStatus::Playing => {
+                let pct = (vol * 100.0).round() as u8;
+                let suffix = if !active { " [off]" } else { "" };
+                format!("{prefix}{:<16} {pct:>3}%{suffix}", layer.name)
+            }
+        };
 
         let gauge_style = if !active {
             Style::new().dim()
@@ -46,7 +57,8 @@ pub fn render(frame: &mut Frame, app: &App) {
             Style::new()
         };
 
-        let ratio = if active { vol as f64 } else { 0.0 };
+        let ratio = if active && matches!(*status, LayerStatus::Playing) { vol as f64 } else { 0.0 };
+        drop(status);
 
         // Render label and gauge bar side by side
         let area = areas[1 + i];
