@@ -1,7 +1,7 @@
 ---
 title: "feat: HTTP/YouTube audio streaming layers"
 type: feat
-status: active
+status: completed
 date: 2026-02-27
 ---
 
@@ -289,18 +289,18 @@ None. Zero new dependencies. Both yt-dlp and curl are runtime subprocess depende
 
 ## Acceptance Criteria
 
-- [ ] `quies start` + `quies add lofi https://youtu.be/0NCrui_dYJY` downloads and plays the audio as a mixer layer
-- [ ] `quies add rain https://example.com/rain.mp3` works for direct HTTP audio
-- [ ] `quies vol lofi 0.3` adjusts the audio layer volume
-- [ ] `quies mute lofi` mutes the audio layer
-- [ ] `quies status` shows download state (`[downloading...]`, `[error]`) and volume
-- [ ] Audio loops seamlessly when the file ends
-- [ ] Files >200MB are rejected (yt-dlp/curl enforce limit)
-- [ ] Missing yt-dlp produces a clear error message with install instructions
-- [ ] Downloaded files are cached (re-adding same URL is instant)
-- [ ] `quies stop` cleans up temp files (best-effort)
-- [ ] Zero new compile dependencies (`Cargo.toml` unchanged)
-- [ ] `cargo clippy` clean
+- [x] `quies start` + `quies add lofi https://youtu.be/0NCrui_dYJY` downloads and plays the audio as a mixer layer
+- [x] `quies add rain https://example.com/rain.mp3` works for direct HTTP audio
+- [x] `quies vol lofi 0.3` adjusts the audio layer volume
+- [x] `quies mute lofi` mutes the audio layer
+- [x] `quies status` shows download state (`[downloading...]`, `[error]`) and volume
+- [x] Audio loops seamlessly when the file ends
+- [x] Files >200MB are rejected (yt-dlp/curl enforce limit)
+- [x] Missing yt-dlp produces a clear error message with install instructions
+- [x] Downloaded files are cached (re-adding same URL is instant)
+- [x] `quies stop` cleans up temp files (best-effort)
+- [x] Zero new compile dependencies (`Cargo.toml` unchanged)
+- [x] `cargo clippy` clean
 
 ## Dependencies & Risks
 

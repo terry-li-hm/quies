@@ -1,11 +1,16 @@
 # quies
 
-TUI ambient sound mixer — layer noise and nature sounds from your terminal.
+TUI ambient sound mixer — layer lofi, noise, and nature sounds from your terminal.
 
 ## Install
 
 ```sh
 cargo install quies
+```
+
+Requires [yt-dlp](https://github.com/yt-dlp/yt-dlp) for YouTube audio:
+```sh
+brew install yt-dlp
 ```
 
 ## Usage
@@ -18,6 +23,8 @@ quies start focus        # start with focus preset
 quies status             # show what's playing
 quies vol brown 0.3      # set brown noise to 30%
 quies mute pink          # toggle mute on pink noise
+quies add lofi https://youtu.be/0NCrui_dYJY  # add YouTube audio layer
+quies add rain https://example.com/rain.mp3   # add direct audio URL
 quies stop               # stop daemon
 ```
 
@@ -30,11 +37,30 @@ quies focus              # TUI with focus preset
 
 ```
  quies
- ▸ Brown Noise       ████████████░░░░░░░░  60%
-   Pink Noise        ██████░░░░░░░░░░░░░░  30%
+ ▸ ~ Brown Noise     ████████████░░░░░░░░  60%
+   ~ Pink Noise      ██████░░░░░░░░░░░░░░  30%
+   ♪ lofi            ██████████░░░░░░░░░░  50%
 
  j/k select  h/l volume  m mute  q quit
 ```
+
+### Audio layers
+
+Add audio from YouTube or direct URLs to mix with noise generators:
+
+```sh
+quies start
+quies add ambient https://youtu.be/0NCrui_dYJY   # downloads via yt-dlp
+quies add rain https://example.com/rain.mp3       # downloads via curl
+quies vol ambient 0.3                             # adjust volume
+quies status                                      # shows download progress
+```
+
+- YouTube URLs use yt-dlp (must be installed)
+- Direct HTTP URLs use curl
+- Files are cached — re-adding the same URL is instant
+- Audio loops seamlessly
+- Max file size: 200MB
 
 ## Presets
 
