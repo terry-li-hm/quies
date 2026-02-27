@@ -139,6 +139,29 @@ impl AudioEngine {
         let active = &self.layers[idx].active;
         active.store(!active.load(Relaxed), Relaxed);
     }
+
+    pub fn find_layer(&self, name: &str) -> Option<usize> {
+        let name_lower = name.to_lowercase();
+        self.layers
+            .iter()
+            .position(|l| l.name.to_lowercase().contains(&name_lower))
+    }
+
+    pub fn status(&self) -> String {
+        if self.layers.is_empty() {
+            return "no layers".to_string();
+        }
+        self.layers
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let vol = (self.get_volume(i) * 100.0).round() as u8;
+                let state = if self.is_active(i) { "" } else { " [off]" };
+                format!("  {} {}%{}", l.name, vol, state)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 struct VolumeSource<S> {

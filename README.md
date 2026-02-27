@@ -2,14 +2,6 @@
 
 TUI ambient sound mixer — layer noise and nature sounds from your terminal.
 
-```
- quies
- ▸ Brown Noise       ████████████░░░░░░░░  60%
-   Pink Noise        ██████░░░░░░░░░░░░░░  30%
-
- j/k select  h/l volume  m mute  q quit
-```
-
 ## Install
 
 ```sh
@@ -18,22 +10,31 @@ cargo install quies
 
 ## Usage
 
+### Daemon mode (background playback)
+
 ```sh
-quies               # default preset (brown noise)
-quies focus         # brown + pink noise
-quies deep          # heavy brown, light pink
+quies start              # start with default preset
+quies start focus        # start with focus preset
+quies status             # show what's playing
+quies vol brown 0.3      # set brown noise to 30%
+quies mute pink          # toggle mute on pink noise
+quies stop               # stop daemon
 ```
 
-## Controls
+### TUI mode (interactive)
 
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Select next layer |
-| `k` / `↑` | Select previous layer |
-| `l` / `→` | Volume up |
-| `h` / `←` | Volume down |
-| `m` | Mute/unmute layer |
-| `q` | Quit |
+```sh
+quies                    # TUI with default preset
+quies focus              # TUI with focus preset
+```
+
+```
+ quies
+ ▸ Brown Noise       ████████████░░░░░░░░  60%
+   Pink Noise        ██████░░░░░░░░░░░░░░  30%
+
+ j/k select  h/l volume  m mute  q quit
+```
 
 ## Presets
 
